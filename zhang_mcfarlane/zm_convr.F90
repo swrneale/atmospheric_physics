@@ -933,7 +933,7 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
 !
    real(kind_phys) capeten(ncol,5)     ! provisional value of cape
    real(kind_phys) tv(ncol,pver)       !
-   real(kind_phys) tpv(ncol,pver)      !
+   real(kind_phys) tpv(ncol,pver)     !
    real(kind_phys) buoy(ncol,pver)
    real(kind_phys) w_incld(ncol,pver)
 
@@ -1033,8 +1033,10 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
    qstp(:ncol,:) = q(:ncol,:)
    hmn_lev(:ncol,:) = 0._kind_phys
 
+!   write(iulog,*) 'zs, zi, z = ',zs, zi(:,pver+1),z(:,pver)
+!   write(iulog,*) 'pbl_z, pbl_dz,parcel_dz,parcel_ztop = ',pbl_z, pbl_dz,parcel_dz,parcel_ztop
 
-
+      
 !!! Initialize tv and buoy for output.
 !!! tv=tv : tpv=tpv : qstp=q : buoy=0.
    tv(:ncol,:) = t(:ncol,:) *(1._kind_phys+1.608_kind_phys*q(:ncol,:))/ (1._kind_phys+q(:ncol,:))
@@ -1082,15 +1084,24 @@ if (lparcel_pbl) then
             parcel_qdp(i) = parcel_qdp(i)+q_zdp(i,k)*dp_zfrac ! Sum parcel profile up to a certain level.
             parcel_dp(i)  = parcel_dp(i)+dp_lev(i,k)*dp_zfrac ! SUM dp's for weighting of parcel_hdp
 
+!           write(iulog,*) 'Lev = ',k
+        
+!           write(iulog,*) 'ipar,p_dp,p_hdp,p_qdp,dp_zfrac =',ipar,parcel_dp,parcel_hdp,parcel_qdp,dp_zfrac
+       
+            
          end if
       end do
       hpar(i) = parcel_hdp(i)/parcel_dp(i)
       qpar(i) = parcel_qdp(i)/parcel_dp(i)
       mx(i) = ipar
+
+!      write(iulog,*) 'hpar,qpar = ',hpar, qpar
+     
    end do
 
 
-else ! Default method finding level of MSE maximum (nlev sensitive though)
+else                      ! Default method finding level of MSE maximum (nlev sensitive though)
+         
     !
     ! set "launching" level(mx) to be at maximum moist static energy.
     ! search for this level stops at planetary boundary layer top.
@@ -1138,6 +1149,7 @@ else
 
 end if ! Mixed parcel properties
 
+! write(iulog,*) 'IN: mx,tl,ql,pl,lcl = ',mx,tl,ql,pl,lcl
 
 
 !
@@ -1222,8 +1234,9 @@ end if ! Mixed parcel properties
       end do
 
 !! calculate convective available potential energy (cape).
-! INCLUDE Negative CAPE for CAM6 default calculation  
-!
+!  -EXCLUDE -ve CAPE for dynamic parcel calculation. 
+! 
+
       do n = 1,num_cin
          do k = msg + 1,pver
             do i = 1,ncol
@@ -1256,12 +1269,12 @@ end if ! Mixed parcel properties
 
 !
 !     calculate convective available potential energy (cape).
-!     EXCLUDE -ve CAPE for dynamic parcel calculation. 
+!     include -ve CAPE for parcel pbl calculation. 
 !
          do n = 1,num_cin
          do k = msg + 1,pver
             do i = 1,ncol
-               if (plge600(i) .and. k <= mx(i) .and. k > lelten(i,n) .and. buoy(i,k) > 0) then
+               if (plge600(i) .and. k <= mx(i) .and. k > lelten(i,n)) then
                   capeten(i,n) = capeten(i,n) + rd*buoy(i,k)*log(pf(i,k+1)/pf(i,k))                                                   
                end if
             end do
@@ -1310,8 +1323,18 @@ end if ! Mixed parcel properties
 
    end if
 
+!
+!     WRITE OUT KEY FIELDS THAT ARE TOO ANNOYING TO outfld
+!      
 
-
+!      write(iulog,*) 'OUT: mx,tl,ql,pl,lcl = ',mx,tl,ql,pl,lcl
+!      write(iulog,*) 'tpert = ',tpert
+!      write(iulog,*) 'CAPE = ',cape
+!      write(iulog,*) 'BUOY = ',buoy
+!      write(iulog,*) 'tpv = ',tpv
+!      write(iulog,*) 'tv = ',tv
+!      write(iulog,*) 'qstp = ',qstp
+      
       
 !
 ! put lower bound on cape for diagnostic purposes.
