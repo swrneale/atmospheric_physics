@@ -43,13 +43,22 @@
 
    logical :: lparcel_pbl     ! Switch to turn on mixing of parcel MSE air, and picking launch level to be the top of the PBL.
 
+  
 
-   real(kind_phys) :: tiedke_add      ! namelist configurable
-   real(kind_phys) :: dmpdz_param     ! namelist configurable
-
-! RBN: KE parcel
-   logical :: ltau_dynamic    ! Use a dynamic tau calculation
+!  RBN: KE parcel/Dynamic tau/Height variable entrainment.
+! --  Needed here as they are use deeper in the code. --      
+      
+   logical :: ltau_dynamic    ! Use a dynamic tau calculation *** Need to Add this to namelist infrastructure ***
    logical :: lparcel_ke ! Calculate buoyancy/convective top base on parcel K.E.    
+
+   real(kind_phys) :: tiedke_add ! namelist configurable
+   real(kind_phys) :: dmpdz_param ! namelist configurable
+   real(kind_phys) :: dmpdz_ut_param 
+   real(kind_phys) :: dmpdz_ltzlev_param
+   real(kind_phys) :: dmpdz_utzlev_param
+      
+   real(kind_phys) :: kepar_pini_ke 
+   real(kind_phys) :: kepar_pe2ke_eff
 
       
 contains
@@ -64,9 +73,10 @@ subroutine zm_convr_init(cpair, epsilo, gravit, latvap, tmelt, rair, &
                     limcnv_in, zmconv_c0_lnd, zmconv_c0_ocn, zmconv_ke, zmconv_ke_lnd, &
                     zmconv_momcu, zmconv_momcd, zmconv_num_cin, zmconv_org, &
                     no_deep_pbl_in, zmconv_tiedke_add, &
-                    zmconv_capelmt, zmconv_dmpdz, zmconv_parcel_pbl, zmconv_parcel_ke, zmconv_tau, &
-                    
+                    zmconv_capelmt, zmconv_dmpdz,  zmconv_dmpdz_ut, zmconv_dmpdz_ltzlev, zmconv_dmpdz_utzlev, &
+                    zmconv_parcel_pbl, zmconv_parcel_ke, zmconv_pini_ke,  zmconv_pe2ke_eff, zmconv_tau, &
                     masterproc, iulog, errmsg, errflg)
+                    
 
    real(kind_phys), intent(in)   :: cpair           ! specific heat of dry air (J K-1 kg-1)
    real(kind_phys), intent(in)   :: epsilo          ! ratio of h2o to dry air molecular weights
@@ -86,10 +96,18 @@ subroutine zm_convr_init(cpair, epsilo, gravit, latvap, tmelt, rair, &
    logical, intent(in)           :: zmconv_org
    logical, intent(in)           :: no_deep_pbl_in  ! no_deep_pbl = .true. eliminates ZM convection entirely within PBL
    real(kind_phys),intent(in)           :: zmconv_tiedke_add
-   real(kind_phys),intent(in)           :: zmconv_capelmt
-   real(kind_phys),intent(in)           :: zmconv_dmpdz
+      real(kind_phys),intent(in)           :: zmconv_capelmt
+      
+   real(kind_phys),intent(in)           :: zmconv_dmpdz ! Entrainment rate for plume buoyancy calculation
+   real(kind_phys),intent(in)           :: zmconv_dmpdz_ut ! Upper tropospheric value of entrainment rate for plume buoyancy calculation.
+   real(kind_phys),intent(in)           :: zmconv_dmpdz_ltzlev ! Start of liner transition between zmconv_dmpdz and zmconv_dmpdz_ut (mb)
+   real(kind_phys),intent(in)           :: zmconv_dmpdz_utzlev  ! End of linear transition between zmconv_dmpdz and zmconv_dmpdz_ut (mb)
+      
    logical, intent(in)           :: zmconv_parcel_pbl ! Should the parcel properties include PBL mixing?
    logical, intent(in)           :: zmconv_parcel_ke ! Should the parcel properties include KE contributions?
+   real(kind_phys),intent(in)           :: zmconv_pini_ke ! Initial parcel KE for a dynmic parcel ascent calculation
+   real(kind_phys),intent(in)           :: zmconv_pe2ke_eff ! Efficiency of PE->KE energy conversation for a dynmic parcel ascent calculation
+      
    real(kind_phys),intent(in)           :: zmconv_tau
    logical, intent(in)                  :: masterproc
    integer, intent(in)                  :: iulog
@@ -122,11 +140,16 @@ subroutine zm_convr_init(cpair, epsilo, gravit, latvap, tmelt, rair, &
    tiedke_add = zmconv_tiedke_add
    capelmt = zmconv_capelmt
    dmpdz_param = zmconv_dmpdz
+   dmpdz_ut_param = zmconv_dmpdz_ut
+   dmpdz_ltzlev_param = zmconv_dmpdz_ltzlev 
+   dmpdz_utzlev_param = zmconv_dmpdz_utzlev
+      
    no_deep_pbl = no_deep_pbl_in
    lparcel_pbl = zmconv_parcel_pbl
+      
    lparcel_ke = zmconv_parcel_ke   
-
-
+   kepar_pini_ke =  zmconv_pini_ke
+   kepar_pe2ke_eff = zmconv_pe2ke_eff
       
    tau = zmconv_tau
 
@@ -137,16 +160,23 @@ subroutine zm_convr_init(cpair, epsilo, gravit, latvap, tmelt, rair, &
       
    if ( masterproc ) then
       write(iulog,*) 'tuning parameters zm_convr_init: tau',tau
-      write(iulog,*) 'tuning parameters zm_convr_init: c0_lnd',c0_lnd, ', c0_ocn', c0_ocn
+      write(iulog,*) 'tuning parameters zm_convr_init: c0_lnd',c0_lnd,'c0_ocn',c0_ocn
       write(iulog,*) 'tuning parameters zm_convr_init: num_cin', num_cin
       write(iulog,*) 'tuning parameters zm_convr_init: ke',ke
       write(iulog,*) 'tuning parameters zm_convr_init: no_deep_pbl',no_deep_pbl
       write(iulog,*) 'tuning parameters zm_convr_init: zm_capelmt', capelmt
       write(iulog,*) 'tuning parameters zm_convr_init: zm_dmpdz', dmpdz_param
+      write(iulog,*) 'tuning parameters zm_convr_init: zm_dmpdz_ut_param', dmpdz_ut_param
+      write(iulog,*) 'tuning parameters zm_convr_init: dmpdz_ltzlev_param', dmpdz_ltzlev_param
+      write(iulog,*) 'tuning parameters zm_convr_init: dmpdz_utzlev_param', dmpdz_utzlev_param
       write(iulog,*) 'tuning parameters zm_convr_init: zm_tiedke_add', tiedke_add
       write(iulog,*) 'tuning parameters zm_convr_init: zm_parcel_pbl', lparcel_pbl
+      write(iulog,*) 'tuning parameters zm_convr_init: zm_parcel_ke', lparcel_ke
+      write(iulog,*) 'tuning parameters zm_convr_init: kepar_pini_ke',  kepar_pini_ke
+      write(iulog,*) 'tuning parameters zm_convr_init: kepar_pe2ke_eff', kepar_pe2ke_eff
    endif
 
+  
    if (masterproc) write(iulog,*)'**** ZM: DILUTE Buoyancy Calculation ****'
 
 end subroutine zm_convr_init
@@ -168,7 +198,8 @@ subroutine zm_convr_run(     ncol    ,pver    , &
                     ql      ,rliq    ,landfrac,                   &
                     org     ,orgt    ,org2d   ,  &
                     dif     ,dnlf    ,dnif    , &
-                    buoy    ,wm_incld ,w_incld ,lcl ,pl ,tl  ,hmax ,maxi ,lel   ,plev_ke, &
+                    buoy    ,wm_incld ,w_incld ,lcl ,pl ,tl, &
+                    hmax ,maxi ,lel   ,plev_ke, dmpdz, tke, &
                     rice   ,errmsg  ,errflg,iulog)
 !-----------------------------------------------------------------------
 !
@@ -304,8 +335,9 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys), intent(in) :: pblh(:)     !                                                       (ncol)
    real(kind_phys), intent(in) :: tpert(:)      !                                                     (ncol)
    real(kind_phys), intent(in) :: landfrac(:) ! RBN Landfrac                                          (ncol)
+   real(kind_phys), intent(in) :: tke(:,:) ! TKE (from CLUBB)                                         (ncol,pver)
 
-! output arguments
+!     output arguments
 !
    real(kind_phys), intent(out) :: qtnd(:,:)           ! specific humidity tendency (kg/kg/s)             (ncol,pver)
    real(kind_phys), intent(out) :: heat(:,:)           ! heating rate (dry static energy tendency, W/kg)  (ncol,pver)
@@ -340,7 +372,8 @@ subroutine zm_convr_run(     ncol    ,pver    , &
 
    real(kind_phys), intent(in) :: org(:,:)     ! Only used if zm_org is true  ! in
    real(kind_phys), intent(out) :: orgt(:,:)   ! Only used if zm_org is true   ! out
-   real(kind_phys), intent(out) :: org2d(:,:)  ! Only used if zm_org is true   ! out
+   real(kind_phys), intent(out) :: org2d(:,:) ! Only used if zm_org is true   ! out
+   real(kind_phys), intent(out) :: dmpdz(:,:)     ! variable entrainment rate (push back up for outfld)
 
    ! Local variables
 
@@ -444,7 +477,7 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys) pl(ncol) ! Pressure at the lifting condensation level (Pa)
    real(kind_phys) hmax(ncol) ! Moist Static energy maximum
    real(kind_phys) plev_ke(ncol,pver) ! Parcel kinetic energy at a particular level (J/kg).
-   
+
       
    integer jlcl(ncol)
    integer j0(ncol)                 ! wg detrainment initiation level index.
@@ -611,8 +644,8 @@ subroutine zm_convr_run(     ncol    ,pver    , &
                tp      ,qstp    ,tl      ,rl      ,cape     , &
                pblt    ,lcl     ,lel     ,lon     ,maxi     , &
                rgas    ,grav    ,cpres   ,msg     , &
-               zi      ,zs      ,tpert   , org2d  , landfrac, wm_incld, &              
-               buoy    ,w_incld ,pl      ,hmax   ,plev_ke, &
+               zi      ,zs      ,tpert   ,org2d  , landfrac, wm_incld, &              
+               buoy    ,w_incld ,pl      ,hmax   ,plev_ke, dmpdz, tke, &
                errmsg  ,errflg, iulog)
 
 !
@@ -761,7 +794,7 @@ subroutine zm_convr_run(     ncol    ,pver    , &
          mb(i) = 0._kind_phys
       endif
    end do
-   ! If no_deep_pbl = .true., don't allow convection entirely
+   ! If no_deep_pbl = .true., dont allow convection entirely
    ! within PBL (suggestion of Bjorn Stevens, 8-2000)
 
    if (no_deep_pbl) then
@@ -846,7 +879,12 @@ end subroutine zm_convr_run
 subroutine zm_convr_finalize
 end subroutine zm_convr_finalize
 
-!=========================================================================================
+
+
+
+
+
+!=================================================== real(kind_phys), intent(in) :: landfrac(:) ! RBN Landfrac                                          (ncol)======================================
 
 subroutine buoyan_dilute(  ncol   ,pver    , &
                   cpliq   ,latice  ,cpwv    ,rh2o    ,&
@@ -855,7 +893,7 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
                   pblt    ,lcl     ,lel     ,lon     ,mx      , &
                   rd      ,grav    ,cp      ,msg     , &
                   zi      ,zs      ,tpert   ,org    , landfrac, wm_incld, &
-                  buoy    ,w_incld ,pl      ,hmax   ,plev_ke, &
+                  buoy    ,w_incld ,pl      ,hmax   ,plev_ke,   dmpdz,  tke, &
                   errmsg  ,errflg, iulog)
 !-----------------------------------------------------------------------
 !
@@ -901,7 +939,8 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
    real(kind_phys), intent(in) :: z(ncol,pver)        ! height
    real(kind_phys), intent(in) :: pf(ncol,pver+1)     ! pressure at interfaces
    real(kind_phys), intent(in) :: pblt(ncol)          ! index of pbl depth
-   real(kind_phys), intent(in) :: tpert(ncol)         ! perturbation temperature by pbl processes
+   real(kind_phys), intent(in) :: tpert(ncol) ! perturbation temperature by pbl processes
+   real(kind_phys), intent(in) :: tke(ncol,pver) ! Turbulent Kinetic Energy from CLUBB
 
 ! Use z interface/surface relative values for PBL parcel calculations.
    real(kind_phys), intent(in) :: zi(ncol,pver+1)
@@ -916,13 +955,14 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
    real(kind_phys), intent(out) :: tl(ncol)            ! parcel temperature at lcl
    real(kind_phys), intent(out) :: cape(ncol) ! convective aval. pot. energy.
    real(kind_phys), intent(out) :: wm_incld(ncol) ! Mean deep convective in-cloud vertical velocity
-   
+   real(kind_phys), intent(out) :: dmpdz(ncol,pver)     ! variable entrainment rate (push back up for outfld)
       
    integer lcl(ncol)        !
    integer lel(ncol)        !
    integer lon(ncol)        ! level of onset of deep convection
    integer mx(ncol)         ! level of max moist static energy
 
+     
    real(kind_phys)  :: org(:,:)      ! organization parameter
    real(kind_phys), intent(in) :: landfrac(ncol)
    character(len=512), intent(out)      :: errmsg
@@ -973,8 +1013,8 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
   integer            :: ipar ! Index for top of parcel mixing/launch level.
 
 ! RBN variables for parcel total energy consideration
-   real(kind_phys),parameter :: pini_ke  = 5._kind_phys        ! Convective parcel initial kinetic energy (J/kg).
-   real(kind_phys),parameter :: pe2ke_eff = 0.1_kind_phys     ! PE->KE parcel energy conversion efficiency.
+!   real(kind_phys),parameter :: pini_ke  = 5._kind_phys        ! Convective parcel initial kinetic energy (J/kg).
+!   real(kind_phys),parameter :: pe2ke_eff = 0.1_kind_phys     ! PE->KE parcel energy conversion efficiency.
    real(kind_phys)           :: plev_ke(ncol,pver)  ! Parcel kinetic energy at a particular level (J/kg).
    real(kind_phys)           :: w_nrg(ncol,pver)    ! Energy associated with the large scale w(omega) 
    logical            :: first_kelt0(ncol)   ! Indicating first time ke<0 in a column.   
@@ -1159,9 +1199,9 @@ end if ! Mixed parcel properties
 !!! DILUTE PLUME CALCULATION USING ENTRAINING PLUME !!!
 !!!   RBN 9/9/04   !!!
 
-   call parcel_dilute(ncol, pver, cpliq, cpwv, rh2o, latice, msg, mx, p, t, q, &
-   tpert, tp, tpv, qstp, pl, tl, ql, lcl, &
-   org, landfrac, errmsg, errflg)
+   call parcel_dilute(ncol, pver, cpliq, cpwv, rh2o, latice, msg, mx, p, t, q, zs, z, &
+   tpert, tp, tpv, qstp, pl, tl, ql, lcl, dmpdz, &
+   org, landfrac, errmsg, errflg,iulog)
 
 
 ! If lcl is above the nominal level of non-divergence (600 mbs),
@@ -1208,7 +1248,7 @@ end if ! Mixed parcel properties
 ! For CIN to really matter need to include the parcel calculation below the LCL
 !
 ! -Calcuated bottom to top 
-! -Initializes parcel energy with initial value at hmax level
+! -Initializes parcel energy with initial value at hmax level (either prescribed or direct from tke)
 ! -Increments KE base on buoyancy conversion with pe2ke efficiency
 ! -Parcel terminates at level of zero energy   
 
@@ -1217,12 +1257,16 @@ end if ! Mixed parcel properties
       do k = pver, msg + 2, -1
          do i = 1,ncol
             
-            if (k == mx(i)) then
-                plev_ke(i,k) = pini_ke
+            if (k == mx(i)) then ! Sect TKE for energy parcel or plev_ke if => 0
+                if (kepar_pini_ke >= 0._kind_phys) then
+                   plev_ke(i,k) = kepar_pini_ke
+                else
+                   plev_ke(i,k) = tke(i,k)
+               end if
             end if
 
             if (k < mx(i).and.plge600(i)) then
-               plev_ke(i,k) = plev_ke(i,k+1) + pe2ke_eff*rd*buoy(i,k)*log(pf(i,k+1)/pf(i,k)) + 0.5*w_nrg(i,k)*w_nrg(i,k)
+               plev_ke(i,k) = plev_ke(i,k+1) + kepar_pe2ke_eff*rd*buoy(i,k)*log(pf(i,k+1)/pf(i,k)) + 0.5*w_nrg(i,k)*w_nrg(i,k)
                w_incld(i,k) = sqrt(max(0._kind_phys,2._kind_phys*plev_ke(i,k)))
                if (plev_ke(i,k) <= 0._kind_phys .and. first_kelt0(i)) then ! Parcel terminates at level of zero energy
                   knt(i) = 1 ! This is regardless of num_cin (integer)
@@ -1346,9 +1390,9 @@ end if ! Mixed parcel properties
    return
 end subroutine buoyan_dilute
 
-subroutine parcel_dilute (ncol, pver, cpliq, cpwv, rh2o, latice, msg, klaunch, p, t, q, &
-  tpert, tp, tpv, qstp, pl, tl, ql, lcl, &
-  org, landfrac,errmsg,errflg)
+subroutine parcel_dilute (ncol, pver, cpliq, cpwv, rh2o, latice, msg, klaunch, p, t, q, zs, z, &
+  tpert, tp, tpv, qstp, pl, tl, ql, lcl, dmpdz, &
+  org, landfrac,errmsg,errflg,iulog)
 
 ! Routine  to determine
 !   1. Tp   - Parcel temperature
@@ -1371,7 +1415,11 @@ integer, intent(in), dimension(ncol) :: klaunch(ncol)
 real(kind_phys), intent(in), dimension(ncol,pver) :: p
 real(kind_phys), intent(in), dimension(ncol,pver) :: t
 real(kind_phys), intent(in), dimension(ncol,pver) :: q
+real(kind_phys), intent(in), dimension(ncol) :: zs
+real(kind_phys), intent(in), dimension(ncol,pver) :: z    
 real(kind_phys), intent(in), dimension(ncol) :: tpert ! PBL temperature perturbation.
+
+      integer, intent(in)                  :: iulog
 
 real(kind_phys), intent(inout), dimension(ncol,pver) :: tp    ! Parcel temp.
 real(kind_phys), intent(inout), dimension(ncol,pver) :: qstp  ! Parcel water vapour (sat value above lcl).
@@ -1382,10 +1430,11 @@ real(kind_phys), intent(inout), dimension(ncol) :: pl          ! Actual pressure
 integer, intent(inout), dimension(ncol) :: lcl ! Lifting condesation level (first model level with saturation).
 
 real(kind_phys), intent(out), dimension(ncol,pver) :: tpv   ! Define tpv within this routine.
-
+real(kind_phys), intent(out), dimension(ncol,pver) :: dmpdz     ! variable entrainment rate (push back up for outfld)
+      
 character(len=512), intent(out)      :: errmsg
 integer, intent(out)                 :: errflg
-
+ 
 
 
 real(kind_phys), dimension(:,:) :: org
@@ -1406,7 +1455,7 @@ real(kind_phys) smix(ncol,pver)        ! Entropy of the entraining parcel.
 real(kind_phys) xsh2o(ncol,pver)       ! Precipitate lost from parcel.
 real(kind_phys) ds_xsh2o(ncol,pver)    ! Entropy change due to loss of condensate.
 real(kind_phys) ds_freeze(ncol,pver)   ! Entropy change sue to freezing of precip.
-real(kind_phys) dmpdz2d(ncol,pver)     ! variable detrainment rate
+
 
 real(kind_phys) mp(ncol)    ! Parcel mass flux.
 real(kind_phys) qtp(ncol)   ! Parcel total water.
@@ -1418,7 +1467,7 @@ real(kind_phys) mp0(ncol)    ! Parcel launch relative mass flux.
 
 real(kind_phys) lwmax      ! Maximum condesate that can be held in cloud before rainout.
 real(kind_phys) dmpdp      ! Parcel fractional mass entrainment rate (/mb).
-real(kind_phys) dmpdz      ! Parcel fractional mass entrainment rate (/m)
+
 real(kind_phys) dpdz,dzdp  ! Hydrstatic relation and inverse of.
 real(kind_phys) senv       ! Environmental entropy at each grid point.
 real(kind_phys) qtenv      ! Environmental total water "   "   ".
@@ -1435,6 +1484,8 @@ real(kind_phys) dsdp, dqtdp, dqxsdp ! LCL s, qt, p gradients (k, k+1)
 real(kind_phys) slcl,qtlcl,qslcl    ! LCL s, qt, qs values.
 real(kind_phys) org2rkm, org2Tpert
 real(kind_phys) dmpdz_lnd, dmpdz_mask
+
+real(kind_phys) zk, zklim, dmpdz_trans
 
 integer rcall       ! Number of ientropy call for errors recording
 integer nit_lheat     ! Number of iterations for condensation/freezing loop.
@@ -1458,7 +1509,7 @@ if (zm_org) then
    org2Tpert = 0._kind_phys
 endif
 nit_lheat = 2 ! iterations for ds,dq changes from condensation freezing.
-dmpdz=dmpdz_param       ! Entrainment rate. (-ve for /m)
+!dmpdz=dmpdz_param       ! Entrainment rate. (-ve for /m) - Now calcuated as a function of pressure, which could also be constant like here.
 dmpdz_lnd=-1.e-3_kind_phys
 lwmax = 1.e-3_kind_phys    ! Need to put formula in for this.
 tscool = 0.0_kind_phys   ! Temp at which water loading freezes in the cloud.
@@ -1466,7 +1517,7 @@ tscool = 0.0_kind_phys   ! Temp at which water loading freezes in the cloud.
 qtmix=0._kind_phys
 smix=0._kind_phys
 
-qtenv = 0._kind_phys
+!qtenv = 0._kind_phys
 senv = 0._kind_phys
 tenv = 0._kind_phys
 penv = 0._kind_phys
@@ -1482,6 +1533,34 @@ mp = 0._kind_phys
 new_q = 0._kind_phys
 new_s = 0._kind_phys
 
+zk = 0._kind_phys
+zklim = 0._kind_phys
+dmpdz_trans = 0._kind_phys
+
+
+      
+
+
+! Need to make dmpdz a function of height and location
+!     If dmpdz_ut = dmpdz then operates as default CAM with a constant entrainment
+!     -Otherwise entrainment transitions linearly from dmpdz in the lower troposphere
+!     to dmpdz_ut in the upper tropopshere and between dmpdz_ltzlev_param and dmpdz_utzlev_param 
+!     -Forumated in height (meters) for every grid point aboove the surface (zs) level
+
+
+write(iulog,*) 'dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param =',  dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param 
+do k = pver,msg + 1,-1
+  do i=1,ncol
+     zk = z(i,k)-zs(i)
+     zklim= max(dmpdz_ltzlev_param,min(zk,dmpdz_utzlev_param)) ! Limit merging region height to between dmpdz_ltzlev and dmpdz_utzlev
+     dmpdz_trans = (dmpdz_ltzlev_param-zklim)/(dmpdz_ltzlev_param-dmpdz_utzlev_param)
+     dmpdz(i,k) =  dmpdz_ut_param*dmpdz_trans + dmpdz_param*(1._kind_phys-dmpdz_trans)
+     write(iulog,*) 'k, zk, zklim, dmpdz_trans = ', k, zk, zklim, dmpdz_trans,dmpdz(i,k) 
+   end do
+ end do
+
+
+      
 ! **** Begin loops ****
 
 do k = pver, msg+1, -1
@@ -1530,10 +1609,10 @@ do k = pver, msg+1, -1
          dzdp = 1._kind_phys/dpdz ! in m/mb
          
          if (zm_org) then
-            dmpdz_mask = landfrac(i) * dmpdz_lnd + (1._kind_phys - landfrac(i)) * dmpdz
+            dmpdz_mask = landfrac(i) * dmpdz_lnd + (1._kind_phys - landfrac(i)) * dmpdz_param
             dmpdp = (dmpdz_mask/(1._kind_phys+org(i,k)*org2rkm))*dzdp              ! /mb Fractional entrainment
-         else
-            dmpdp = dmpdz*dzdp
+         else      
+            dmpdp = dmpdz(i,k)*dzdp
          endif
 
 ! Sum entrainment to current level
@@ -1760,6 +1839,8 @@ SUBROUTINE ientropy (rcall,icol,s,p,qt,T,qst,Tfg,cpliq,cpwv,rh2o,errmsg,errflg)
 
   converged = .false.
 
+  errmsg = ''
+  
   ! Invert the entropy equation -- use Brent's method
   ! Brent, R. P. Ch. 3-4 in Algorithms for Minimization Without Derivatives. Englewood Cliffs, NJ: Prentice-Hall, 1973.
 
