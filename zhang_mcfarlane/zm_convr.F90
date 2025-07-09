@@ -159,7 +159,7 @@ subroutine zm_convr_init(cpair, epsilo, gravit, latvap, tmelt, rair, &
    ltau_dynamic = .false. ! Use a dynamic tau calculation
       
    if ( masterproc ) then
-      write(iulog,*) 'tuning parameters zm_convr_init: tau',tau
+      write(iulog,*) 'tuning parameters zm_conv_init: tau',tau
       write(iulog,*) 'tuning parameters zm_convr_init: c0_lnd',c0_lnd,'c0_ocn',c0_ocn
       write(iulog,*) 'tuning parameters zm_convr_init: num_cin', num_cin
       write(iulog,*) 'tuning parameters zm_convr_init: ke',ke
@@ -335,8 +335,7 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys), intent(in) :: pblh(:)     !                                                       (ncol)
    real(kind_phys), intent(in) :: tpert(:)      !                                                     (ncol)
    real(kind_phys), intent(in) :: landfrac(:) ! RBN Landfrac                                          (ncol)
-   real(kind_phys), intent(in) :: tke(:,:) ! TKE (from CLUBB)                                         (ncol,pver)
-
+                                           
 !     output arguments
 !
    real(kind_phys), intent(out) :: qtnd(:,:)           ! specific humidity tendency (kg/kg/s)             (ncol,pver)
@@ -373,8 +372,23 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys), intent(in) :: org(:,:)     ! Only used if zm_org is true  ! in
    real(kind_phys), intent(out) :: orgt(:,:)   ! Only used if zm_org is true   ! out
    real(kind_phys), intent(out) :: org2d(:,:) ! Only used if zm_org is true   ! out
-   real(kind_phys), intent(out) :: dmpdz(:,:)     ! variable entrainment rate (push back up for outfld)
 
+   
+!  RBN: Non-local (inout) variabels for CAM7+ setups (PBL and KE parcel additions)
+   
+   real(kind_phys), intent(out) :: dmpdz(:,:)     ! variable entrainment rate (push back up for outfld)
+   real(kind_phys), intent(out) :: wm_incld(:)    ! Convective weighted (?) mean in-cloud vertical velocity
+   real(kind_phys), intent(out) :: w_incld(:,:)   ! Convective in-cloud vertical velocity
+   real(kind_phys), intent(out) :: buoy(:,:)      ! Buoyancy in the vertical (K)
+   real(kind_phys), intent(out) :: pl(:)          ! Pressure at the lifting condensation level (Pa)
+   real(kind_phys), intent(out) :: tl(:)          ! Parcel temperature at lcl.
+   real(kind_phys), intent(out) :: hmax(:)        ! Moist Static energy maximum
+   real(kind_phys), intent(out) :: plev_ke(:,:)   ! Parcel kinetic energy at a particular level (J/kg).
+   real(kind_phys), intent(in)  :: tke(:,:)       ! TKE (from CLUBB)
+   integer, intent(out) :: lcl(:)                 ! w base level index of deep cumulus convection.
+   integer, intent(out) :: lel(:)                 ! w index of highest theoretical convective plume.
+   integer, intent(out) :: maxi(:)                ! w index of level with largest moist static energy.
+   
    ! Local variables
 
    real(kind_phys) zs(ncol)
@@ -396,9 +410,11 @@ subroutine zm_convr_run(     ncol    ,pver    , &
 
 !CACNOTE - Figure out real intent for ql
    real(kind_phys),intent(inout):: ql(ncol,pver)                    ! wg grid slice of cloud liquid water.
-!
-   real(kind_phys) pblt(ncol)           ! i row of pbl top indices.
 
+! RBN: Local variables for CAM7+ setups (PBL and KE parcel additions)
+   real(kind_phys) pblt(ncol)         ! i row of pbl top indices.
+   real(kind_phys) wm_incldg(ncol)    ! Gathered Convective in-cloud vertical velocity
+   integer  lon(ncol)                 ! w index of onset level for deep convection.
 
 
 
@@ -416,12 +432,9 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys) pf(ncol,pver+1)           ! w  grid slice of ambient interface pressure in mbs.
    real(kind_phys) qstp(ncol,pver)           ! w  grid slice of parcel temp. saturation mixing ratio.
 
-   real(kind_phys) tl(ncol)                  ! w  row of parcel temperature at lcl.
+  
 
-   integer lcl(ncol)                  ! w  base level index of deep cumulus convection.
-   integer lel(ncol)                  ! w  index of highest theoretical convective plume.
-   integer lon(ncol)                  ! w  index of onset level for deep convection.
-   integer maxi(ncol)                 ! w  index of level with largest moist static energy.
+  
 
    real(kind_phys) precip
 !
@@ -469,14 +482,7 @@ subroutine zm_convr_run(     ncol    ,pver    , &
    real(kind_phys) mb(ncol)                ! wg cloud base mass flux.
 
 
-   !RBN - Convective in-cloud vertical velocities and vars passed up for 'outfld'
-   real(kind_phys) wm_incld(ncol)          ! Convective in-cloud vertical velocity
-   real(kind_phys) wm_incldg(ncol) ! Gathered Convective in-cloud vertical velocity
-   real(kind_phys) w_incld(ncol,pver) ! Gathered Convective in-cloud vertical velocity
-   real(kind_phys) buoy(ncol,pver) ! Buoyancy in the vertical (K)
-   real(kind_phys) pl(ncol) ! Pressure at the lifting condensation level (Pa)
-   real(kind_phys) hmax(ncol) ! Moist Static energy maximum
-   real(kind_phys) plev_ke(ncol,pver) ! Parcel kinetic energy at a particular level (J/kg).
+  
 
       
    integer jlcl(ncol)
@@ -884,7 +890,7 @@ end subroutine zm_convr_finalize
 
 
 
-!=================================================== real(kind_phys), intent(in) :: landfrac(:) ! RBN Landfrac                                          (ncol)======================================
+!================================================================================
 
 subroutine buoyan_dilute(  ncol   ,pver    , &
                   cpliq   ,latice  ,cpwv    ,rh2o    ,&
@@ -954,13 +960,15 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
    real(kind_phys), intent(out) :: qstp(ncol,pver)     ! saturation mixing ratio of parcel (only above lcl, just q below).
    real(kind_phys), intent(out) :: tl(ncol)            ! parcel temperature at lcl
    real(kind_phys), intent(out) :: cape(ncol) ! convective aval. pot. energy.
+   real(kind_phys), intent(out) :: buoy(ncol,pver)
    real(kind_phys), intent(out) :: wm_incld(ncol) ! Mean deep convective in-cloud vertical velocity
+   real(kind_phys), intent(out) :: w_incld(ncol,pver) ! Convective in-cloud vertical velocity
    real(kind_phys), intent(out) :: dmpdz(ncol,pver)     ! variable entrainment rate (push back up for outfld)
       
-   integer lcl(ncol)        !
-   integer lel(ncol)        !
-   integer lon(ncol)        ! level of onset of deep convection
-   integer mx(ncol)         ! level of max moist static energy
+   integer, intent(out) :: lcl(ncol)        !
+   integer, intent(out) :: lel(ncol)        !
+   integer, intent(out) :: lon(ncol)        ! level of onset of deep convection
+   integer, intent(out) :: mx(ncol)         ! level of max moist static energy
 
      
    real(kind_phys)  :: org(:,:)      ! organization parameter
@@ -974,8 +982,8 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
    real(kind_phys) capeten(ncol,5)     ! provisional value of cape
    real(kind_phys) tv(ncol,pver)       !
    real(kind_phys) tpv(ncol,pver)     !
-   real(kind_phys) buoy(ncol,pver)
-   real(kind_phys) w_incld(ncol,pver)
+  
+
 
    real(kind_phys) a1(ncol)
    real(kind_phys) a2(ncol)
@@ -999,14 +1007,14 @@ subroutine buoyan_dilute(  ncol   ,pver    , &
   real(kind_phys)           :: dp_lev(ncol,pver)   ! Level dpressure between interfaces
   real(kind_phys)           :: hmn_zdp(ncol,pver)  ! Integrals of hmn_lev*dp_lev at each level
   real(kind_phys)           :: q_zdp(ncol,pver)    ! Integrals of q*dp_lev at each level
-  real(kind_phys)           :: dp_zfrac             ! Fraction of vertical grid box below mixing top (usually pblt)
+  real(kind_phys)           :: dp_zfrac            ! Fraction of vertical grid box below mixing top (usually pblt)
   real(kind_phys)           :: parcel_dz(ncol)     ! Depth of parcel mixing (usually parcel_hscale*parcel_dz)
   real(kind_phys)           :: parcel_ztop(ncol)   ! Height of parcel mixing (usually parcel_ztop+zm(nlev))
   real(kind_phys)           :: parcel_dp(ncol)     ! Pressure integral over parcel mixing depth (usually pblt)
   real(kind_phys)           :: parcel_hdp(ncol)    ! Pressure*MSE integral over parcel mixing depth (usually pblt)
   real(kind_phys)           :: parcel_qdp(ncol)    ! Pressure*q integral over parcel mixing depth (usually pblt)
-  real(kind_phys)           :: pbl_z(ncol) ! Previously diagnosed PBL height
-  real(kind_phys)           :: pbl_dz(ncol) ! Previously diagnosed PBL depth
+  real(kind_phys)           :: pbl_z(ncol)         ! Previously diagnosed PBL height
+  real(kind_phys)           :: pbl_dz(ncol)        ! Previously diagnosed PBL depth
   real(kind_phys)           :: hpar(ncol)          ! Initial MSE of the parcel
   real(kind_phys)           :: qpar(ncol)          ! Initial humidity of the parcel
   real(kind_phys)           :: ql(ncol)          ! Initial parcel humidity (for ientropy routine)
@@ -1105,7 +1113,7 @@ if (lparcel_pbl) then
    q_zdp(:ncol,1:pver) = q(:ncol,1:pver)*dp_lev(:ncol,1:pver)
 
 
-! Mix profile over vertical length scale of 0.5*PBLH.
+! Mix profile over vertical length scale of (parcel_hscale*PBLH).
 
    do i = 1,ncol ! Loop columns
       do k = pver,msg + 1,-1
@@ -1508,8 +1516,12 @@ if (zm_org) then
    org2rkm = 10._kind_phys
    org2Tpert = 0._kind_phys
 endif
+
+! Initialize entrainment to dmpz_param everywhere
+dmpdz(:,:) = dmpdz_param       ! Entrainment rate. (-ve for /m) - Now calculated as a function of pressure, which could also be constant like here.
+
+
 nit_lheat = 2 ! iterations for ds,dq changes from condensation freezing.
-!dmpdz=dmpdz_param       ! Entrainment rate. (-ve for /m) - Now calcuated as a function of pressure, which could also be constant like here.
 dmpdz_lnd=-1.e-3_kind_phys
 lwmax = 1.e-3_kind_phys    ! Need to put formula in for this.
 tscool = 0.0_kind_phys   ! Temp at which water loading freezes in the cloud.
@@ -1517,7 +1529,7 @@ tscool = 0.0_kind_phys   ! Temp at which water loading freezes in the cloud.
 qtmix=0._kind_phys
 smix=0._kind_phys
 
-!qtenv = 0._kind_phys
+qtenv = 0._kind_phys
 senv = 0._kind_phys
 tenv = 0._kind_phys
 penv = 0._kind_phys
@@ -1548,14 +1560,14 @@ dmpdz_trans = 0._kind_phys
 !     -Forumated in height (meters) for every grid point aboove the surface (zs) level
 
 
-write(iulog,*) 'dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param =',  dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param 
+!write(iulog,*) 'dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param =',  dmpdz_ltzlev_param,dmpdz_utzlev_param, dmpdz_ut_param 
 do k = pver,msg + 1,-1
   do i=1,ncol
      zk = z(i,k)-zs(i)
      zklim= max(dmpdz_ltzlev_param,min(zk,dmpdz_utzlev_param)) ! Limit merging region height to between dmpdz_ltzlev and dmpdz_utzlev
      dmpdz_trans = (dmpdz_ltzlev_param-zklim)/(dmpdz_ltzlev_param-dmpdz_utzlev_param)
      dmpdz(i,k) =  dmpdz_ut_param*dmpdz_trans + dmpdz_param*(1._kind_phys-dmpdz_trans)
-     write(iulog,*) 'k, zk, zklim, dmpdz_trans = ', k, zk, zklim, dmpdz_trans,dmpdz(i,k) 
+!     write(iulog,*) 'k, zk, zklim, dmpdz_trans = ', k, zk, zklim, dmpdz_trans,dmpdz(i,k) 
    end do
  end do
 
